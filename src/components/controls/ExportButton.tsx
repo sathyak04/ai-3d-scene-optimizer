@@ -6,21 +6,6 @@ import {
 import { useSceneStore, ASSET_OPTIONS } from '@/store/sceneStore';
 import { formatBytes } from '@/lib/utils/format';
 
-const DownloadIcon = (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.6"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
-    <path d="M12 4 L12 16" />
-    <path d="M7 11 L12 16 L17 11" />
-    <path d="M5 19 L19 19" />
-  </svg>
-);
-
 type Props = {
   /** Renders as a compact icon-only button (for inline placement). */
   compact?: boolean;
@@ -72,13 +57,13 @@ export function ExportButton({ compact = false }: Props) {
           disabled={busy}
           title={busy ? 'Exporting…' : 'Export optimized .glb'}
           className={[
-            'w-9 h-9 rounded-md flex items-center justify-center transition-all border',
+            'h-9 px-3 rounded-md flex items-center justify-center gap-1.5 transition-all border text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap',
             busy
               ? 'border-bg-border bg-bg-panel text-text-dim cursor-wait'
               : 'border-accent/40 bg-accent/15 text-accent hover:bg-accent/25',
           ].join(' ')}
         >
-          <span className="block w-5 h-5">{DownloadIcon}</span>
+          {busy ? 'Exporting…' : 'Export to .glb'}
         </button>
         {(last || error) && (
           <div className="absolute bottom-full left-0 mb-2 z-20 min-w-[240px] max-w-[320px] bg-bg-panel/95 backdrop-blur-md border rounded-md shadow-xl px-2.5 py-2 text-[10px] font-mono whitespace-normal"

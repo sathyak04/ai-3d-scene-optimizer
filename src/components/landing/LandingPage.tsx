@@ -1,39 +1,38 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSceneStore } from '@/store/sceneStore';
 
-const PARTICLE_COUNT = 1800;
+const PARTICLE_COUNT = 2400;
 const ACCENT = '#7c5cff';
-const ACCENT_GLOW = 'rgba(124, 92, 255, 0.65)';
+const ACCENT_GLOW = 'rgba(124, 92, 255, 0.6)';
+const TEXT_WHITE = '#ffffff';
+const TEXT_GLOW = 'rgba(255, 255, 255, 0.4)';
 const BG = '#0d0d12';
 
-// Pyramid silhouette in cursor-relative coords (matches the header logo).
-// Particles inside this triangle get pushed outward — the cursor effectively
-// IS the logo, and particles flow around it.
+// Pyramid silhouette in cursor-relative coords. Particles inside this triangle
+// get pushed outward — a triangular hole that follows the cursor without any
+// visible cursor replacement.
 const PYRAMID_SCALE = 32;
 const PYRAMID_VERTICES: [number, number][] = [
-  [0, -1.0 * PYRAMID_SCALE],   // apex
-  [-0.85 * PYRAMID_SCALE, 0.85 * PYRAMID_SCALE], // bottom-left
-  [0.85 * PYRAMID_SCALE, 0.85 * PYRAMID_SCALE],  // bottom-right
+  [0, -1.0 * PYRAMID_SCALE],
+  [-0.85 * PYRAMID_SCALE, 0.85 * PYRAMID_SCALE],
+  [0.85 * PYRAMID_SCALE, 0.85 * PYRAMID_SCALE],
 ];
+
+type ParticleColor = 'accent' | 'white';
 
 type Particle = {
   x: number;
   y: number;
   vx: number;
   vy: number;
-  // Two target sets that we lerp between based on `morph` (0 = paper text, 1 = header layout)
   textTargetX: number;
   textTargetY: number;
   headerTargetX: number;
   headerTargetY: number;
-  jitter: number; // tiny per-particle phase offset for idle motion
+  jitter: number;
+  color: ParticleColor;
 };
 
-/**
- * Sample the alpha pixels of a rendered string (or any draw callback) at
- * regular intervals, returning N candidate positions. Used to lay out
- * particles into the shape of "paper" text and the smaller header layout.
- */
 function sampleDrawnPixels(
   width: number,
   height: number,
@@ -66,7 +65,6 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-/** Standard point-in-triangle barycentric test. */
 function pointInTriangle(
   px: number,
   py: number,
@@ -81,10 +79,61 @@ function pointInTriangle(
   return !(hasNeg && hasPos);
 }
 
+/**
+ * Draw the origami pyramid (left face filled, right face outline) at the given
+ * center + radius. Proportions match the header SVG paths exactly:
+ *   apex          (12, 3)   →  (0, -r)
+ *   bottom-left   (4, 20)   →  (-0.94r, +r)
+ *   bottom-front  (12, 17)  →  (0, +0.65r)
+ *   bottom-right  (20, 20)  →  (+0.94r, +r)
+ * (derived from viewBox 0 0 24 24, half-height 8.5 mapped to r.)
+ */
+const PY_X = 0.94;
+const PY_FRONT_Y = 0.65;
+
+function drawPyramid(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  color: string
+) {
+  const r = radius;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(2, r * 0.12);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  // Left filled face: apex → bottom-left → bottom-front
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.lineTo(-PY_X * r, r);
+  ctx.lineTo(0, PY_FRONT_Y * r);
+  ctx.closePath();
+  ctx.fill();
+  // Right outline face: apex → bottom-front → bottom-right
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.lineTo(0, PY_FRONT_Y * r);
+  ctx.lineTo(PY_X * r, r);
+  ctx.closePath();
+  ctx.stroke();
+  // Outline the left face too (matches the third path in the SVG)
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.lineTo(-PY_X * r, r);
+  ctx.lineTo(0, PY_FRONT_Y * r);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
 export function LandingPage() {
   const setView = useSceneStore((s) => s.setView);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const morphRef = useRef(0); // 0 = paper text, 1 = header layout
+  const morphRef = useRef(0);
   const mouseRef = useRef<{ x: number; y: number; inside: boolean }>({
     x: 0,
     y: 0,
@@ -93,7 +142,7 @@ export function LandingPage() {
   const [hoveringButton, setHoveringButton] = useState(false);
   const [overlayShown, setOverlayShown] = useState(false);
 
-  // Drive the morph target via the hover state.
+  // Drive the morph value toward target each frame.
   useEffect(() => {
     let raf = 0;
     const tick = () => {
@@ -105,19 +154,16 @@ export function LandingPage() {
     return () => cancelAnimationFrame(raf);
   }, [hoveringButton]);
 
-  // Once particles have substantially morphed to header layout, also fade in
-  // the real DOM logo+text so it feels like the particles are "settling" into
-  // the actual header element.
   useEffect(() => {
     if (hoveringButton) {
-      const t = setTimeout(() => setOverlayShown(true), 240);
+      const t = setTimeout(() => setOverlayShown(true), 260);
       return () => clearTimeout(t);
     }
     setOverlayShown(false);
     return;
   }, [hoveringButton]);
 
-  // Particle system + render loop.
+  // Particle system
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -135,73 +181,123 @@ export function LandingPage() {
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
 
-    // ── Sample target positions ─────────────────────────────────────────
-    // 1) Big "paper" text positions (idle layout)
-    const textPositions = sampleDrawnPixels(
+    /**
+     * Lay out [pyramid · paper] composition centered on (cx, cy). Returns the
+     * actual centers each shape should be drawn at so the combined width is
+     * exactly centered around `cx`.
+     */
+    const layoutLogoAndText = (
+      cx: number,
+      cy: number,
+      logoRadius: number,
+      fontSize: number,
+      gap: number
+    ) => {
+      // Measure "paper" text width using the canvas API for accurate centering.
+      ctx.save();
+      ctx.font = `700 ${fontSize}px Inter, sans-serif`;
+      const textWidth = ctx.measureText('paper').width;
+      ctx.restore();
+      const logoWidth = 2 * logoRadius;
+      const totalWidth = logoWidth + gap + textWidth;
+      const startX = cx - totalWidth / 2;
+      return {
+        logoCx: startX + logoRadius,
+        logoCy: cy,
+        textCx: startX + logoWidth + gap + textWidth / 2,
+        textCy: cy,
+      };
+    };
+
+    // ── IDLE LAYOUT: large pyramid (purple) + "paper" (white), centered
+    const idleFontSize = Math.min(W / 5.2, H / 1.9);
+    const idleLogoRadius = idleFontSize * 0.55;
+    const idleGap = idleLogoRadius * 0.7;
+    const idle = layoutLogoAndText(
+      W / 2,
+      H / 2,
+      idleLogoRadius,
+      idleFontSize,
+      idleGap
+    );
+
+    const idlePyramidPositions = sampleDrawnPixels(
+      W,
+      H,
+      (c) => drawPyramid(c, idle.logoCx, idle.logoCy, idleLogoRadius, '#fff'),
+      4
+    );
+    const idleTextPositions = sampleDrawnPixels(
       W,
       H,
       (c) => {
-        const fontSize = Math.min(W / 4.6, H / 1.8);
         c.fillStyle = '#fff';
-        c.font = `700 ${fontSize}px Inter, sans-serif`;
+        c.font = `700 ${idleFontSize}px Inter, sans-serif`;
         c.textAlign = 'center';
         c.textBaseline = 'middle';
-        c.fillText('paper', W / 2, H / 2);
+        c.fillText('paper', idle.textCx, idle.textCy);
       },
       4
     );
 
-    // 2) Header-layout positions: small pyramid + "paper" + tagline,
-    //    drawn at the size and position they'd occupy in the real header.
-    const headerPositions = sampleDrawnPixels(
+    // ── HEADER LAYOUT: mid-size pyramid + "paper" word, also centered.
+    const headerFontSize = Math.min(W / 11, H / 6.5);
+    const headerLogoRadius = headerFontSize * 0.55;
+    const headerGap = headerLogoRadius * 0.7;
+    const header = layoutLogoAndText(
+      W / 2,
+      H / 2 - 30,
+      headerLogoRadius,
+      headerFontSize,
+      headerGap
+    );
+
+    const headerPyramidPositions = sampleDrawnPixels(
+      W,
+      H,
+      (c) =>
+        drawPyramid(c, header.logoCx, header.logoCy, headerLogoRadius, '#fff'),
+      3
+    );
+    const headerTextPositions = sampleDrawnPixels(
       W,
       H,
       (c) => {
-        const cx = W / 2 - 110;
-        const cy = H / 2;
-        const logoSize = 22;
-        // Pyramid logo (left-face filled, right-face outline) — matches header SVG
-        c.save();
-        c.translate(cx, cy);
         c.fillStyle = '#fff';
-        c.beginPath();
-        c.moveTo(0, -logoSize / 2);
-        c.lineTo(-logoSize / 2.4, logoSize / 2);
-        c.lineTo(0, logoSize / 4);
-        c.closePath();
-        c.fill();
-        c.lineWidth = 2;
-        c.strokeStyle = '#fff';
-        c.beginPath();
-        c.moveTo(0, -logoSize / 2);
-        c.lineTo(0, logoSize / 4);
-        c.lineTo(logoSize / 2.4, logoSize / 2);
-        c.closePath();
-        c.stroke();
-        c.restore();
-        // "paper" word
-        c.fillStyle = '#fff';
-        c.font = `600 22px Inter, sans-serif`;
-        c.textAlign = 'left';
+        c.font = `700 ${headerFontSize}px Inter, sans-serif`;
+        c.textAlign = 'center';
         c.textBaseline = 'middle';
-        c.fillText('paper', cx + 18, cy);
-        // tagline
-        c.font = `500 11px "JetBrains Mono", monospace`;
-        c.fillStyle = 'rgba(255,255,255,0.6)';
-        c.fillText('3D OPTIMIZATION FOR EVERYONE', cx + 90, cy + 1);
+        c.fillText('paper', header.textCx, header.textCy);
       },
       3
     );
 
-    if (textPositions.length === 0 || headerPositions.length === 0) return;
+    if (
+      idlePyramidPositions.length === 0 ||
+      idleTextPositions.length === 0 ||
+      headerPyramidPositions.length === 0 ||
+      headerTextPositions.length === 0
+    ) {
+      return;
+    }
 
-    // Build particles, mapping each to a paired target in both layouts.
-    const shuffledText = shuffle(textPositions);
-    const shuffledHeader = shuffle(headerPositions);
+    const idleP = shuffle(idlePyramidPositions);
+    const idleT = shuffle(idleTextPositions);
+    const headP = shuffle(headerPyramidPositions);
+    const headT = shuffle(headerTextPositions);
+
+    // Allocate particle counts proportional to source sample density so
+    // visual weight stays consistent between pyramid and text.
+    const totalIdle = idleP.length + idleT.length;
+    const pyramidShare = Math.round(
+      (idleP.length / totalIdle) * PARTICLE_COUNT
+    );
+    const textShare = PARTICLE_COUNT - pyramidShare;
+
     const particles: Particle[] = [];
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const t = shuffledText[i % shuffledText.length];
-      const h = shuffledHeader[i % shuffledHeader.length];
+    for (let i = 0; i < pyramidShare; i++) {
+      const t = idleP[i % idleP.length];
+      const h = headP[i % headP.length];
       particles.push({
         x: Math.random() * W,
         y: Math.random() * H,
@@ -212,16 +308,31 @@ export function LandingPage() {
         headerTargetX: h.x,
         headerTargetY: h.y,
         jitter: Math.random() * Math.PI * 2,
+        color: 'accent',
+      });
+    }
+    for (let i = 0; i < textShare; i++) {
+      const t = idleT[i % idleT.length];
+      const h = headT[i % headT.length];
+      particles.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        vx: 0,
+        vy: 0,
+        textTargetX: t.x,
+        textTargetY: t.y,
+        headerTargetX: h.x,
+        headerTargetY: h.y,
+        jitter: Math.random() * Math.PI * 2,
+        color: 'white',
       });
     }
 
-    // ── Animation loop ───────────────────────────────────────────────────
     let raf = 0;
     let frame = 0;
     const tick = () => {
       frame++;
       const morph = morphRef.current;
-      // Subtle motion-blur background instead of full clear, so trails feel softer.
       ctx.fillStyle = 'rgba(13, 13, 18, 0.28)';
       ctx.fillRect(0, 0, W, H);
 
@@ -229,27 +340,22 @@ export function LandingPage() {
       const repelActive = m.inside && morph < 0.5;
 
       for (const p of particles) {
-        // Lerp between the two layouts based on morph value.
         const tx = p.textTargetX * (1 - morph) + p.headerTargetX * morph;
         const ty = p.textTargetY * (1 - morph) + p.headerTargetY * morph;
 
-        // Spring toward target (stiffer when in header mode so it settles cleanly)
         const stiffness = 0.014 + morph * 0.04;
         const friction = 0.86 + morph * 0.05;
         p.vx += (tx - p.x) * stiffness;
         p.vy += (ty - p.y) * stiffness;
 
-        // Idle micro-jitter so the text breathes when at rest
         if (morph < 0.2) {
           p.vx += Math.cos(frame * 0.012 + p.jitter) * 0.04;
           p.vy += Math.sin(frame * 0.012 + p.jitter) * 0.04;
         }
 
-        // Pyramid-shaped cursor repulsion (only in idle / paper-text mode)
         if (repelActive) {
           const rx = p.x - m.x;
           const ry = p.y - m.y;
-          // Quick bounding-circle reject before doing the triangle test
           if (rx * rx + ry * ry < (PYRAMID_SCALE * 1.6) ** 2) {
             if (pointInTriangle(rx, ry, PYRAMID_VERTICES)) {
               const dist = Math.hypot(rx, ry) || 1;
@@ -266,15 +372,28 @@ export function LandingPage() {
         p.y += p.vy;
       }
 
-      // Render in two passes: glow halo, then crisp dots
+      // Render in passes: glow halo first (additive), then crisp dots.
+      // Group by color so we minimize fillStyle flips.
       ctx.globalCompositeOperation = 'lighter';
       ctx.fillStyle = ACCENT_GLOW;
       for (const p of particles) {
+        if (p.color !== 'accent') continue;
+        ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+      }
+      ctx.fillStyle = TEXT_GLOW;
+      for (const p of particles) {
+        if (p.color !== 'white') continue;
         ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
       }
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = ACCENT;
       for (const p of particles) {
+        if (p.color !== 'accent') continue;
+        ctx.fillRect(p.x - 0.5, p.y - 0.5, 1, 1);
+      }
+      ctx.fillStyle = TEXT_WHITE;
+      for (const p of particles) {
+        if (p.color !== 'white') continue;
         ctx.fillRect(p.x - 0.5, p.y - 0.5, 1, 1);
       }
 
@@ -282,7 +401,6 @@ export function LandingPage() {
     };
     raf = requestAnimationFrame(tick);
 
-    // ── Mouse handlers ───────────────────────────────────────────────────
     const onMove = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       mouseRef.current = {
@@ -294,9 +412,7 @@ export function LandingPage() {
     const onLeave = () => {
       mouseRef.current.inside = false;
     };
-    const onResize = () => {
-      setSize();
-    };
+    const onResize = () => setSize();
     canvas.addEventListener('mousemove', onMove);
     canvas.addEventListener('mouseleave', onLeave);
     window.addEventListener('resize', onResize);
@@ -311,131 +427,80 @@ export function LandingPage() {
 
   return (
     <div
-      className="min-h-screen w-full bg-bg text-text font-sans flex flex-col items-center justify-center relative overflow-hidden"
+      className="min-h-screen w-full bg-bg text-text font-sans relative overflow-hidden"
       style={{ background: BG }}
     >
-      {/* Particle field — fills the central area */}
-      <div className="relative w-full max-w-5xl h-[60vh] flex items-center justify-center">
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full transition-opacity duration-300"
-          style={{
-            cursor: 'none',
-            opacity: overlayShown ? 0.0 : 1,
-          }}
-        />
-        {/* Custom cursor: pyramid logo following the mouse over the canvas */}
-        <CursorPyramid
-          getMouse={() => mouseRef.current}
-          getCanvas={() => canvasRef.current}
-          hidden={hoveringButton}
-        />
-        {/* Real DOM logo+text that fades in when particles morph to header layout */}
-        <div
-          className={[
-            'flex items-baseline gap-1.5 absolute pointer-events-none transition-opacity duration-500',
-            overlayShown ? 'opacity-100' : 'opacity-0',
-          ].join(' ')}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            className="w-6 h-6 text-accent self-center"
-            style={{ filter: 'drop-shadow(0 0 6px rgba(124,92,255,0.55))' }}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.7"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            aria-hidden="true"
+      {/* Particle field fills the entire viewport — content rendered at H/2
+          inside the canvas now lands exactly on viewport vertical center. */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="relative w-full max-w-6xl h-full flex items-center justify-center">
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0 w-full h-full transition-opacity duration-500"
+            style={{ opacity: overlayShown ? 0.0 : 1 }}
+          />
+          {/* Real DOM logo + text + mission, fades in when particles morph */}
+          <div
+            className={[
+              'absolute pointer-events-none transition-opacity duration-500 flex flex-col items-center text-center px-6',
+              overlayShown ? 'opacity-100' : 'opacity-0',
+            ].join(' ')}
           >
-            <path
-              d="M12 3 L4 20 L12 17 Z"
-              fill="currentColor"
-              fillOpacity="0.18"
-            />
-            <path d="M12 3 L12 17 L20 20 Z" />
-            <path d="M12 3 L4 20 L12 17 Z" />
-          </svg>
-          <span className="text-2xl font-semibold lowercase tracking-tight text-text ml-1">
-            paper
-          </span>
-          <span className="text-[11px] font-mono uppercase tracking-wider text-text-dim ml-2">
-            3d optimization for everyone
-          </span>
+            <div className="flex items-baseline gap-3">
+              <svg
+                viewBox="0 0 24 24"
+                className="w-24 h-24 text-accent self-center"
+                style={{
+                  filter: 'drop-shadow(0 0 24px rgba(124,92,255,0.75))',
+                }}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 3 L4 20 L12 17 Z"
+                  fill="currentColor"
+                  fillOpacity="0.18"
+                />
+                <path d="M12 3 L12 17 L20 20 Z" />
+                <path d="M12 3 L4 20 L12 17 Z" />
+              </svg>
+              <span className="text-7xl font-semibold lowercase tracking-tight text-text ml-2">
+                paper
+              </span>
+            </div>
+            <span className="mt-3 text-[12px] font-mono uppercase tracking-[0.2em] text-text-dim">
+              3d optimization for everyone
+            </span>
+            <p className="mt-7 max-w-xl text-sm leading-relaxed text-text-muted">
+              Paper turns 3D asset optimization into three sliders and a button.
+              Drop in any model, pick a target — mobile, VR, or PC — and ship a
+              platform-ready GLB in seconds. No installs, no expertise, no
+              data ever leaves your browser.
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* CTA */}
-      <button
-        type="button"
-        onMouseEnter={() => setHoveringButton(true)}
-        onMouseLeave={() => setHoveringButton(false)}
-        onClick={() => setView('app')}
-        className="mt-12 px-6 py-3 rounded-md text-sm font-semibold border border-accent/40 bg-accent/15 text-text hover:bg-accent/25 hover:border-accent/70 transition-all duration-200 tracking-wide uppercase"
-      >
-        Explore paper →
-      </button>
-
-      <p className="mt-8 text-[11px] font-mono uppercase tracking-widest text-text-dim">
-        Hover the particles · Hover the button
-      </p>
-    </div>
-  );
-}
-
-/**
- * Renders the origami-pyramid logo at the cursor position, replacing the
- * native cursor over the canvas. Hidden when not hovering or when the
- * button-hover transition is active.
- */
-function CursorPyramid({
-  getMouse,
-  getCanvas,
-  hidden,
-}: {
-  getMouse: () => { x: number; y: number; inside: boolean };
-  getCanvas: () => HTMLCanvasElement | null;
-  hidden: boolean;
-}) {
-  const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      const m = getMouse();
-      const canvas = getCanvas();
-      const el = ref.current;
-      if (el && canvas) {
-        const visible = m.inside && !hidden;
-        el.style.opacity = visible ? '1' : '0';
-        el.style.transform = `translate3d(${m.x - 16}px, ${m.y - 16}px, 0)`;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [getMouse, getCanvas, hidden]);
-
-  return (
-    <div
-      ref={ref}
-      className="absolute top-0 left-0 pointer-events-none transition-opacity duration-200 will-change-transform"
-      style={{ opacity: 0 }}
-    >
-      <svg
-        viewBox="0 0 24 24"
-        className="w-8 h-8 text-accent"
-        style={{ filter: 'drop-shadow(0 0 10px rgba(124,92,255,0.85))' }}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      >
-        <path d="M12 3 L4 20 L12 17 Z" fill="currentColor" fillOpacity="0.22" />
-        <path d="M12 3 L12 17 L20 20 Z" />
-        <path d="M12 3 L4 20 L12 17 Z" />
-      </svg>
+      {/* Button + helper text pinned near the bottom of the viewport so they
+          don't compete with the centered canvas content for vertical space. */}
+      <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center z-10">
+        <button
+          type="button"
+          onMouseEnter={() => setHoveringButton(true)}
+          onMouseLeave={() => setHoveringButton(false)}
+          onClick={() => setView('app')}
+          className="px-7 py-3 rounded-md text-sm font-semibold border border-accent/40 bg-accent/15 text-text hover:bg-accent/25 hover:border-accent/70 transition-all duration-200 tracking-wide uppercase"
+        >
+          Explore paper →
+        </button>
+        <p className="mt-5 text-[11px] font-mono uppercase tracking-widest text-text-dim">
+          Move your cursor through the particles · Hover the button to read more
+        </p>
+      </div>
     </div>
   );
 }

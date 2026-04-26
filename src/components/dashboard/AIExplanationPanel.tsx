@@ -52,9 +52,9 @@ export function AIExplanationPanel() {
 
   return (
     <div className="panel p-3 space-y-2">
-      <h3 className="panel-title flex items-center gap-2">
-        <span className="text-accent">AI</span>
-        <span>Recommendation</span>
+      <h3 className="panel-title flex items-center gap-1.5">
+        <span>Paper</span>
+        <span className="text-accent">Co-pilot</span>
       </h3>
 
       {state.status === 'idle' && (

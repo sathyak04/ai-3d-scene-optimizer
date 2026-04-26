@@ -46,18 +46,6 @@ export function DeltaPanel() {
       fmt: formatNumber,
     },
     {
-      label: 'Materials',
-      value: original.materialCount,
-      optimized: optimized?.materialCount,
-      fmt: (n) => String(n),
-    },
-    {
-      label: 'Textures',
-      value: original.textureCount,
-      optimized: optimized?.textureCount,
-      fmt: (n) => String(n),
-    },
-    {
       label: 'Tex Pixels',
       value: original.totalTexturePixels,
       optimized: optimized?.totalTexturePixels,
@@ -85,8 +73,6 @@ export function DeltaPanel() {
     const specsRows: Array<{ label: string; v: number; fmt: (n: number) => string }> = [
       { label: 'Triangles', v: showAnalysis.triangleCount, fmt: formatNumber },
       { label: 'Vertices', v: showAnalysis.vertexCount, fmt: formatNumber },
-      { label: 'Materials', v: showAnalysis.materialCount, fmt: (n) => String(n) },
-      { label: 'Textures', v: showAnalysis.textureCount, fmt: (n) => String(n) },
       { label: 'Tex Pixels', v: showAnalysis.totalTexturePixels, fmt: formatNumber },
       { label: 'Est Size', v: showAnalysis.estimatedSizeBytes, fmt: formatBytes },
       { label: 'Cost Score', v: showAnalysis.cost.total, fmt: (n) => String(n) },
